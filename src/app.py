@@ -17,7 +17,8 @@ COST_BINS = [-float("inf"), 0, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, fl
 COST_LABELS = ["$0 or less", "$0-1k", "$1k-5k", "$5k-10k", "$10k-25k", "$25k-50k", "$50k-100k", "$100k+"]
 SMALL_SAMPLE = 5
 
-MONEY = st.column_config.NumberColumn(format="dollar")
+# printf-style format works on older Streamlit; named "dollar" needs >= 1.43
+MONEY = st.column_config.NumberColumn(format="$%.2f")
 
 
 def money_config(df):
