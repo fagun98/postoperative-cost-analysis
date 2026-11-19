@@ -17,6 +17,15 @@ Exploratory pipeline and Streamlit dashboard for postoperative utilization and i
 .venv/bin/streamlit run src/app.py      # dashboard
 ```
 
+## Deploy on Databricks Apps
+
+1. Ensure `data/processed/*.csv` exists (run preprocess first if needed).
+2. Create a Databricks App in the workspace and point it at this project root.
+3. `app.yaml` starts Streamlit with `src/app.py` on `$DATABRICKS_APP_PORT`.
+4. `requirements.txt` is what the Apps runtime installs (`streamlit`, `pandas`).
+
+This pilot still reads local processed CSVs bundled with the app. It does not yet query Unity Catalog or a SQL warehouse.
+
 ## Layout
 
 | Path | Purpose |
@@ -28,6 +37,8 @@ Exploratory pipeline and Streamlit dashboard for postoperative utilization and i
 | `src/metrics.py` | Descriptive aggregations, cohorts, thresholds, window sensitivity |
 | `src/app.py` | Four-tab dashboard, native Streamlit components only |
 | `data/processed/` | `claims_clean`, `index_episodes`, `followup_claims`, `sameday_claims`, `episode_summary` (90-day), `data_quality_report` |
+| `app.yaml` | Databricks Apps start command and Streamlit proxy env |
+| `requirements.txt` | Runtime deps for Databricks Apps deploy |
 
 ## Definitions and assumptions
 

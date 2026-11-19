@@ -1,0 +1,25 @@
+# Databricks Apps runtime config for the postoperative cost Streamlit pilot.
+# Place this file at the project root. Deploy the whole project (including
+# data/processed/) so the dashboard can read its local CSVs.
+#
+# Docs: https://docs.databricks.com/dev-tools/databricks-apps/app-runtime.html
+
+command:
+  - streamlit
+  - run
+  - src/app.py
+  - --server.port
+  - "$DATABRICKS_APP_PORT"
+  - --server.address
+  - "0.0.0.0"
+  - --server.headless
+  - "true"
+
+env:
+  # Required behind the Databricks Apps reverse proxy so WebSockets work.
+  - name: STREAMLIT_SERVER_ENABLE_CORS
+    value: "false"
+  - name: STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION
+    value: "false"
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"
