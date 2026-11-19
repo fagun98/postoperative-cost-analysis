@@ -100,8 +100,10 @@ with tab1:
 
     st.markdown(f"**Episodes by postoperative allowed cost ({window} days)**")
     dist = pd.cut(summary["POSTOP_ALLOWED"], COST_BINS, labels=COST_LABELS).value_counts().reindex(COST_LABELS)
-    st.bar_chart(dist.rename("Episodes").reset_index().rename(columns={"POSTOP_ALLOWED": "Postop allowed"}),
-                 x="Postop allowed", y="Episodes", sort=False, y_label="Episodes")
+    # Index order = bar order (compatible with Streamlit < 1.50, which has no sort=)
+    cost_dist = dist.rename("Episodes")
+    cost_dist.index = pd.Index(COST_LABELS, name="Postop allowed")
+    st.bar_chart(cost_dist)
 
     left, right = st.columns(2)
     with left:
@@ -124,12 +126,12 @@ with tab2:
         left, right = st.columns(2)
         with left:
             st.markdown("**Top 10 procedure codes by claim lines**")
-            st.bar_chart(procs.head(10), x="PROC_CD", y="CLAIM_LINES", horizontal=True, sort="-CLAIM_LINES",
-                         y_label="Claim lines", x_label="Procedure code")
+            by_lines = procs.head(10).set_index("PROC_CD")[["CLAIM_LINES"]]
+            st.bar_chart(by_lines)
         with right:
             st.markdown("**Top 10 procedure codes by total allowed**")
-            st.bar_chart(procs.nlargest(10, "TOTAL_ALLOWED"), x="PROC_CD", y="TOTAL_ALLOWED", horizontal=True,
-                         sort="-TOTAL_ALLOWED", y_label="Total allowed ($)", x_label="Procedure code")
+            by_allowed = procs.nlargest(10, "TOTAL_ALLOWED").set_index("PROC_CD")[["TOTAL_ALLOWED"]]
+            st.bar_chart(by_allowed)
 
         st.markdown("**Timing: claim lines and allowed by days after surgery**")
         show_table(metrics.bucket_summary(fu, window))
@@ -142,8 +144,11 @@ with tab2:
             show_table(metrics.diag_proc_combos(fu, window))
 
         st.markdown("**Index allowed vs. postoperative allowed** (association only)")
-        st.scatter_chart(summary, x="INDEX_ALLOWED", y="POSTOP_ALLOWED",
-                         x_label="Index allowed ($)", y_label=f"Postop allowed, {window}d ($)")
+        scatter = summary.rename(columns={
+            "INDEX_ALLOWED": "Index allowed ($)",
+            "POSTOP_ALLOWED": f"Postop allowed, {window}d ($)",
+        })
+        st.scatter_chart(scatter, x="Index allowed ($)", y=f"Postop allowed, {window}d ($)")
 
 # ---------------- Tab 3: Cohorts & Thresholds ----------------
 with tab3:
@@ -161,17 +166,18 @@ with tab3:
                    help=f"Median postop allowed {fmt_money(row.MEDIAN_POSTOP_ALLOWED)}")
     show_table(cs)
 
-    st.divider()
+    st.markdown("---")
     st.markdown(f"**Dollar threshold: postop allowed > {fmt_money(threshold)}**")
     flag = metrics.flag_threshold(summary, threshold)
     c = st.columns(2)
     c[0].metric("Episodes above threshold", f"{flag['flagged']} of {flag['total']}")
     c[1].metric("Share above threshold", f"{flag['share']:.0%}")
-    above = pd.DataFrame({"Group": ["At or below", "Above"],
-                          "Episodes": [flag["total"] - flag["flagged"], flag["flagged"]]})
-    st.bar_chart(above, x="Group", y="Episodes", sort=False)
+    above = pd.DataFrame({
+        "Episodes": [flag["total"] - flag["flagged"], flag["flagged"]],
+    }, index=pd.Index(["At or below", "Above"], name="Group"))
+    st.bar_chart(above)
 
-    st.divider()
+    st.markdown("---")
     st.markdown("**Index billing orgs by cohort**")
     st.warning("Small sample, exploratory only. Most orgs have one or two episodes, so these counts "
                "do not rank organizations as better or worse.")
@@ -210,11 +216,14 @@ with tab4:
         st.info("No post-index claim lines in this window.")
     else:
         daily = tl.groupby("DAYS_AFTER_SURGERY")["RUNNING_ALLOWED"].last().reset_index()
-        st.line_chart(daily, x="DAYS_AFTER_SURGERY", y="RUNNING_ALLOWED",
-                      x_label="Days after surgery", y_label="Running postop allowed ($)")
+        daily = daily.rename(columns={
+            "DAYS_AFTER_SURGERY": "Days after surgery",
+            "RUNNING_ALLOWED": "Running postop allowed ($)",
+        })
+        st.line_chart(daily, x="Days after surgery", y="Running postop allowed ($)")
         show_table(tl)
 
-    st.divider()
+    st.markdown("---")
     st.subheader("Billing org → rendering providers")
     st.warning(config.TIN_WARNING + " Small sample, exploratory only; do not read these as quality ratings.")
     org_names = pd.concat([summary[["BILL_TIN", "BILL_PROV_NM"]], fu[["BILL_TIN", "BILL_PROV_NM"]]]) \
