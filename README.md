@@ -54,7 +54,7 @@ This pilot still reads local processed CSVs bundled with the app. It does not ye
 ## Data findings to be aware of
 
 - **Member IDs were truncated in the source workbook itself.** The `id` values in `docs/data.xlsx` are stored as `116219000000` and similar, identical to `data.csv` (covered by a test). Three ids (`116218000000`, `116219000000`, `116225000000`) each carry two different DOBs. They are split by DOB and flagged `IDENTITY_CONFLICT`; 5 episodes are affected.
-- **8 of 16 episodes have every index 63280 line denied**, so their `INDEX_ALLOWED` is $0. This pulls the median index cost down to about $192. The dashboard has a filter to exclude them.
+- **8 of 16 episodes have every index 63280 line denied**, so their `INDEX_ALLOWED` is $0. Cost statistics (mean, median, percentiles, cohorts, thresholds) exclude denied claims and zero-allowed amounts, so those episodes do not pull the median down. The dashboard also has a filter to drop them from the selected cohort entirely.
 - 327 lines are candidate duplicates and 17 negative lines look like reversals of an earlier line. Both are flagged, not removed.
 
 ## Open questions
