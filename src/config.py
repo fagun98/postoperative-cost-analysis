@@ -14,6 +14,10 @@ INDEX_CPT = "63280"
 STUDY_START = pd.Timestamp("2026-01-01")
 STUDY_END = pd.Timestamp("2026-07-31")
 
+# Place-of-service codes used to bound the index hospitalization and major events.
+INPATIENT_POS = "21"
+OUTPATIENT_SURGERY_POS = frozenset({"22", "24"})
+
 WINDOWS = [30, 60, 90]
 DEFAULT_WINDOW = 90
 DAY_BUCKETS = [(1, 30, "0-30"), (31, 60, "31-60"), (61, 90, "61-90")]

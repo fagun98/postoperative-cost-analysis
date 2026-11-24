@@ -2987,14 +2987,6 @@ zero_allowed,2654,11675033408,allowed=0 (DENIED)
 zero_allowed,2655,116219000000,allowed=0 (DENIED)
 zero_allowed,2656,11675033408,allowed=0 (DENIED)
 zero_allowed,2657,11675033408,allowed=0 (DENIED)
-episode_index_all_denied,,116198000000,episode E002
-episode_index_all_denied,,116218000000,episode E005
-episode_index_all_denied,,116219000000,episode E006
-episode_index_all_denied,,116222000000,episode E009
-episode_index_all_denied,,116223000000,episode E010
-episode_index_all_denied,,11632531141,episode E013
-episode_index_all_denied,,11675033408,episode E015
-episode_index_all_denied,,11692870019,episode E016
 episode_identity_conflict,,116218000000,episode E005
 episode_identity_conflict,,116219000000,episode E006
 episode_identity_conflict,,116219000000,episode E007

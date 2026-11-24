@@ -4,10 +4,18 @@ import pandas as pd
 from src import config
 
 COHORTS = ["Lower", "Typical", "Elevated"]
+DAY_COL = "DAYS_AFTER_DISCHARGE"
+
+
+def _day_col(df):
+    if DAY_COL in df.columns:
+        return DAY_COL
+    return "DAYS_AFTER_SURGERY"
 
 
 def in_window(followup, window):
-    return followup[followup["DAYS_AFTER_SURGERY"] <= window]
+    col = _day_col(followup)
+    return followup[followup[col] <= window]
 
 
 def cost_eligible_mask(df):
@@ -20,19 +28,19 @@ def cost_eligible_lines(df):
 
 
 def cost_stat_series(summary, col="POSTOP_ALLOWED"):
-    """Episode amounts used for mean/median/distribution. Ineligible episodes are NaN.
-
-    Index: no positive allowed (typically all index lines denied).
-    Postoperative: no paid line with allowed > 0 in the window.
-    Total: neither index nor postoperative has eligible dollars.
-    """
+    """Episode amounts used for mean/median/distribution. Ineligible episodes are NaN."""
     s = summary[col].astype(float)
     if col == "INDEX_ALLOWED":
+        if "INDEX_PAID_LINES" in summary.columns:
+            return s.where(summary["INDEX_PAID_LINES"] > 0)
         return s.where(~summary["INDEX_ALL_DENIED"] & (s > 0))
     if col == "POSTOP_ALLOWED":
         return s.where(summary["POSTOP_PAID_LINES"] > 0)
     if col == "TOTAL_ALLOWED":
-        index_ok = ~summary["INDEX_ALL_DENIED"] & (summary["INDEX_ALLOWED"] > 0)
+        if "INDEX_PAID_LINES" in summary.columns:
+            index_ok = summary["INDEX_PAID_LINES"] > 0
+        else:
+            index_ok = ~summary["INDEX_ALL_DENIED"] & (summary["INDEX_ALLOWED"] > 0)
         postop_ok = summary["POSTOP_PAID_LINES"] > 0
         return s.where(index_ok | postop_ok)
     return s
@@ -46,18 +54,20 @@ def day_bucket(days):
 
 
 def timeline(followup, episode_id, window):
-    """One episode's post-index lines in date order with a running allowed total."""
+    """One episode's post-discharge lines in date order with a running allowed total."""
+    col = _day_col(followup)
     t = in_window(followup[followup["EPISODE_ID"] == episode_id], window)
     t = t.sort_values(["SRVC_STRT_DT", "ADJD_MED_CLM_SRVC_LN_NUM"]).copy()
     t["RUNNING_ALLOWED"] = t[config.ALLOWED].cumsum()
-    cols = ["SRVC_STRT_DT", "DAYS_AFTER_SURGERY", "PROC_CD", "DIAG1_CD", "DIAG1_DESC", "PLSRV_CD",
+    cols = ["SRVC_STRT_DT", col, "PROC_CD", "DIAG1_CD", "DIAG1_DESC", "PLSRV_CD",
             "BILL_TIN", "BILL_PROV_NM", "REND_NPI", "PAID_DENIED", config.ALLOWED, "RUNNING_ALLOWED"]
-    return t[cols].reset_index(drop=True)
+    return t[[c for c in cols if c in t.columns]].reset_index(drop=True)
 
 
 def proc_code_summary(followup, window):
     """Per PROC_CD: claim lines, distinct episodes, allowed stats and allowed by day bucket."""
-    fu = in_window(followup, window).assign(BUCKET=lambda d: d["DAYS_AFTER_SURGERY"].map(day_bucket))
+    col = _day_col(followup)
+    fu = in_window(followup, window).assign(BUCKET=lambda d: d[col].map(day_bucket))
     eligible = cost_eligible_lines(fu)
     g = fu.groupby("PROC_CD")
     eg = eligible.groupby("PROC_CD")
@@ -81,8 +91,9 @@ def proc_code_summary(followup, window):
 
 
 def bucket_summary(followup, window):
-    """Claim lines, episodes and allowed amount per 0-30 / 31-60 / 61-90 day bucket."""
-    fu = in_window(followup, window).assign(BUCKET=lambda d: d["DAYS_AFTER_SURGERY"].map(day_bucket))
+    """Claim lines, episodes and allowed amount per day bucket after discharge."""
+    col = _day_col(followup)
+    fu = in_window(followup, window).assign(BUCKET=lambda d: d[col].map(day_bucket))
     eligible = cost_eligible_lines(fu)
     g = fu.groupby("BUCKET")
     eg = eligible.groupby("BUCKET")
@@ -122,17 +133,16 @@ def by_age_group(summary):
 
 
 def by_index_diag(summary):
-    return _group_episodes(summary, ["INDEX_DIAG1_CD", "INDEX_DIAG1_DESC"]).sort_values("EPISODES", ascending=False, ignore_index=True)
+    return _group_episodes(summary, ["INDEX_DIAG1_CD", "INDEX_DIAG1_DESC"]).sort_values(
+        "EPISODES", ascending=False, ignore_index=True)
 
 
 def index_org_outcomes(summary):
-    """Episodes attributed to the billing org of the index surgery (not later billers)."""
     out = _group_episodes(summary, ["BILL_TIN", "BILL_PROV_NM"])
     return out.sort_values(["EPISODES", "MEDIAN_POSTOP_ALLOWED"], ascending=[False, False], ignore_index=True)
 
 
 def diag_proc_combos(followup, window):
-    """Follow-up DIAG1_CD x PROC_CD x billing org, with sample sizes."""
     fu = in_window(followup, window)
     eligible = cost_eligible_lines(fu)
     g = fu.groupby(["DIAG1_CD", "DIAG1_DESC", "PROC_CD", "BILL_TIN"], dropna=False)
@@ -149,7 +159,6 @@ def diag_proc_combos(followup, window):
 
 
 def billing_rendering(followup, window, bill_tin=None):
-    """Services billed/rendered by each BILL_TIN -> REND_NPI pair in follow-up lines."""
     fu = in_window(followup, window)
     if bill_tin is not None:
         fu = fu[fu["BILL_TIN"] == bill_tin]
@@ -168,7 +177,6 @@ def billing_rendering(followup, window, bill_tin=None):
 
 
 def assign_cohorts(summary, low_pct=25, high_pct=75, col="POSTOP_ALLOWED"):
-    """Lower / Typical / Elevated burden by percentiles of cost-eligible episodes."""
     s = cost_stat_series(summary, col)
     eligible = s.dropna()
     if eligible.empty:
@@ -206,7 +214,6 @@ def flag_threshold(summary, dollars, col="POSTOP_ALLOWED"):
 
 
 def org_cohort_counts(cohorted):
-    """Per index billing org: episode count and how many fall in each cohort."""
     assigned = cohorted[cohorted["COHORT"].notna()]
     t = pd.crosstab(assigned["BILL_TIN"], assigned["COHORT"]).reindex(columns=COHORTS, fill_value=0)
     t.insert(0, "EPISODES", t.sum(axis=1))
@@ -214,7 +221,6 @@ def org_cohort_counts(cohorted):
 
 
 def window_sensitivity(episodes, followup, sameday, low_pct=25, high_pct=75):
-    """How each episode's cohort changes across the 30/60/90-day windows."""
     from src.episodes import episode_summary
 
     out = episodes[["EPISODE_ID"]].copy()
@@ -224,3 +230,29 @@ def window_sensitivity(episodes, followup, sameday, low_pct=25, high_pct=75):
         out[f"COHORT_{w}"] = c["COHORT"].astype(str).values
     out["COHORT_CHANGED"] = out[[f"COHORT_{w}" for w in config.WINDOWS]].nunique(axis=1) > 1
     return out
+
+
+def stay_vs_postop_split(summary):
+    index_stat = cost_stat_series(summary, "INDEX_ALLOWED")
+    postop_stat = cost_stat_series(summary, "POSTOP_ALLOWED")
+    return pd.DataFrame({
+        "Component": ["Index hospitalization", "After discharge"],
+        "EPISODES_WITH_DOLLARS": [int(index_stat.notna().sum()), int(postop_stat.notna().sum())],
+        "MEDIAN_ALLOWED": [index_stat.median(), postop_stat.median()],
+        "TOTAL_ALLOWED": [
+            summary.loc[index_stat.notna(), "INDEX_ALLOWED"].sum(),
+            summary.loc[postop_stat.notna(), "POSTOP_ALLOWED"].sum(),
+        ],
+    })
+
+
+def major_event_summary(events):
+    if events is None or len(events) == 0:
+        return pd.DataFrame(columns=["EVENT_TYPE", "EVENTS", "EPISODES", "TOTAL_ALLOWED", "MEDIAN_ALLOWED"])
+    g = events.groupby("EVENT_TYPE")
+    return pd.DataFrame({
+        "EVENTS": g.size(),
+        "EPISODES": g["EPISODE_ID"].nunique(),
+        "TOTAL_ALLOWED": g["ALLOWED"].sum(),
+        "MEDIAN_ALLOWED": g["ALLOWED"].median(),
+    }).reset_index().sort_values("TOTAL_ALLOWED", ascending=False, ignore_index=True)

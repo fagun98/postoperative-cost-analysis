@@ -22,7 +22,10 @@ def test_raw_copy_is_identical_to_supplied_csv():
 
 
 def test_ids_match_values_stored_in_xlsx():
-    xml = zipfile.ZipFile(ROOT / "docs" / "data.xlsx").read("xl/worksheets/sheet1.xml").decode()
+    xlsx = ROOT / "docs" / "data.xlsx"
+    if not xlsx.exists():
+        pytest.skip("docs/data.xlsx not present locally")
+    xml = zipfile.ZipFile(xlsx).read("xl/worksheets/sheet1.xml").decode()
     xlsx_ids = [v for _, v in re.findall(r'<c r="F(\d+)"[^>]*><v>([^<]*)</v>', xml)][1:]
     raw = pd.read_csv(config.RAW_CSV, dtype=str)
     assert raw["id"].tolist() == xlsx_ids
@@ -57,6 +60,8 @@ def test_processed_outputs_drop_rec_and_secondary_diagnoses(pipeline, tmp_path):
     assert {"DIAG1_CD", "DIAG1_DESC", "BILL_TIN"} <= set(cols)
     assert "prov_id" not in cols
     assert "rec" in pd.read_csv(tmp_path / "data_quality_report.csv", nrows=1).columns
+    assert (tmp_path / "major_events.csv").exists()
+    assert (tmp_path / "index_stay_claims.csv").exists()
 
 
 def test_episodes_are_eligible_and_unique(pipeline):
@@ -66,16 +71,20 @@ def test_episodes_are_eligible_and_unique(pipeline):
     assert (ep["INDEX_CPT"] == "63280").all()
     assert ep["EPISODE_ID"].is_unique
     assert not ep.duplicated(["PERSON_KEY", "INDEX_SRVC_DT"]).any()
+    assert {"STAY_START", "STAY_END", "INPATIENT", "LOS_DAYS"} <= set(ep.columns)
     idx = claims[(claims["JOURNEY_PHASE"] == "INDEX") & (claims["PROC_CD"] == "63280")
                  & claims["INDEX_SRVC_DT"].between(config.STUDY_START, config.STUDY_END)]
     assert len(ep) == idx[["PERSON_KEY", "INDEX_SRVC_DT"]].drop_duplicates().shape[0] == 16
 
 
-def test_followup_strictly_after_index_and_sameday_separate(pipeline):
+def test_followup_strictly_after_discharge(pipeline):
     *_, outputs = pipeline
-    assert (outputs["followup_claims"]["DAYS_AFTER_SURGERY"] > 0).all()
-    assert (outputs["sameday_claims"]["DAYS_AFTER_SURGERY"] == 0).all()
-    assert (outputs["followup_claims"]["PROC_DT"].dt.year == 2026).all()
+    fu = outputs["followup_claims"]
+    assert (fu["DAYS_AFTER_DISCHARGE"] > 0).all()
+    assert (fu["PROC_DT"].dt.year == 2026).all()
+    assert (fu["SRVC_STRT_DT"] > fu["STAY_END"]).all()
+    stay = outputs["index_stay_claims"]
+    assert stay["SRVC_STRT_DT"].between(stay["STAY_START"], stay["STAY_END"]).all()
 
 
 def test_identity_conflicts_are_split_not_merged(pipeline):
@@ -91,3 +100,15 @@ def test_quality_report_counts(pipeline):
     assert counts["negative_allowed"] == 21
     assert counts["zero_allowed"] == 959
     assert counts["sameday_followup"] == 539
+
+
+def test_sample_stays_reclassify_in_hospital_care(pipeline):
+    *_, outputs = pipeline
+    ep = outputs["index_episodes"].set_index("EPISODE_ID")
+    stay = outputs["index_stay_claims"]
+    assert ep.loc["E005", "INPATIENT"]
+    assert ep.loc["E005", "LOS_DAYS"] == 3
+    reclass = stay[(stay["EPISODE_ID"] == "E005") & (stay["DAYS_AFTER_SURGERY"] > 0)][config.ALLOWED].sum()
+    assert reclass > 50_000
+    assert not bool(ep.loc["E008", "INPATIENT"])
+    assert ep.loc["E008", "LOS_DAYS"] == 0

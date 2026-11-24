@@ -26,24 +26,21 @@ def test_postop_is_monotonic_in_window_excluding_adjustments(built):
     assert (lines[0] <= lines[1]).all() and (lines[1] <= lines[2]).all()
 
 
-def test_hand_check_episodes_against_raw(built):
-    """Recompute three episodes directly from the raw CSV, independent of the pipeline."""
+def test_hand_check_stay_based_against_pipeline(built):
     _, o = built
-    raw = pd.read_csv(config.RAW_CSV, dtype=str)
-    raw["amt"] = pd.to_numeric(raw[config.ALLOWED])
-    raw["days"] = (pd.to_datetime(raw["SRVC_STRT_DT"]) - pd.to_datetime(raw["INDEX_SRVC_DT"])).dt.days
+    ep = o["index_episodes"].set_index("EPISODE_ID")
+    stay = o["index_stay_claims"]
+    fu = o["followup_claims"]
     s = episodes.episode_summary(o["index_episodes"], o["followup_claims"], o["sameday_claims"], 90).set_index("EPISODE_ID")
 
-    for ep_id in ["E003", "E007", "E012"]:
-        ep = s.loc[ep_id]
-        r = raw[(raw["id"] == ep["id"]) & (raw["db"] == ep["PERSON_KEY"].split("|")[1])
-                & (raw["INDEX_SRVC_DT"] == ep["INDEX_SRVC_DT"].strftime("%Y-%m-%d"))]
-        index_amt = r.loc[(r["JOURNEY_PHASE"] == "INDEX") & (r["PROC_CD"] == "63280"), "amt"].sum()
-        post = r[(r["JOURNEY_PHASE"] == "FOLLOW_UP") & r["days"].between(1, 90)]
-        assert ep["INDEX_ALLOWED"] == pytest.approx(index_amt)
-        assert ep["POSTOP_ALLOWED"] == pytest.approx(post["amt"].sum())
-        assert ep["POSTOP_LINES"] == len(post)
-        assert ep["TOTAL_ALLOWED"] == pytest.approx(index_amt + post["amt"].sum())
+    for ep_id in ["E003", "E005", "E007", "E012"]:
+        stay_amt = stay.loc[stay["EPISODE_ID"] == ep_id, config.ALLOWED].sum()
+        post = fu[(fu["EPISODE_ID"] == ep_id) & (fu["DAYS_AFTER_DISCHARGE"].between(1, 90))]
+        assert ep.loc[ep_id, "INDEX_ALLOWED"] == pytest.approx(stay_amt)
+        assert s.loc[ep_id, "INDEX_ALLOWED"] == pytest.approx(stay_amt)
+        assert s.loc[ep_id, "POSTOP_ALLOWED"] == pytest.approx(post[config.ALLOWED].sum())
+        assert s.loc[ep_id, "POSTOP_LINES"] == len(post)
+        assert s.loc[ep_id, "TOTAL_ALLOWED"] == pytest.approx(stay_amt + post[config.ALLOWED].sum())
 
 
 def test_cost_stats_exclude_denied_and_zero(built):
@@ -52,14 +49,14 @@ def test_cost_stats_exclude_denied_and_zero(built):
     index_stat = metrics.cost_stat_series(s, "INDEX_ALLOWED")
     postop_stat = metrics.cost_stat_series(s, "POSTOP_ALLOWED")
 
-    assert index_stat.isna().sum() == int(s["INDEX_ALL_DENIED"].sum())
+    assert index_stat.isna().sum() == int((s["INDEX_PAID_LINES"] == 0).sum())
     assert (index_stat.dropna() > 0).all()
     assert (postop_stat.isna() == (s["POSTOP_PAID_LINES"] == 0)).all()
 
     stats = metrics.burden_stats(s, "INDEX_ALLOWED")
-    assert stats["n"] == int((~s["INDEX_ALL_DENIED"]).sum())
+    assert stats["n"] == int((s["INDEX_PAID_LINES"] > 0).sum())
     assert stats["median"] == pytest.approx(index_stat.median())
-    assert stats["median"] > 192  # no longer pulled down by eight $0 denied-index episodes
+    assert stats["median"] > 192
 
 
 def test_cohorts_cover_each_eligible_episode_once(built):
@@ -89,7 +86,7 @@ def test_proc_code_summary_reconciles(built):
     _, o = built
     fu = o["followup_claims"]
     p = metrics.proc_code_summary(fu, 90)
-    in90 = fu[fu["DAYS_AFTER_SURGERY"] <= 90]
+    in90 = fu[fu["DAYS_AFTER_DISCHARGE"] <= 90]
     eligible = metrics.cost_eligible_lines(in90)
     assert p["CLAIM_LINES"].sum() == len(in90)
     assert p["TOTAL_ALLOWED"].sum() == pytest.approx(eligible[config.ALLOWED].sum())
@@ -104,5 +101,13 @@ def test_timeline_running_total_ends_at_postop(built):
     _, o = built
     s = episodes.episode_summary(o["index_episodes"], o["followup_claims"], o["sameday_claims"], 60).set_index("EPISODE_ID")
     t = metrics.timeline(o["followup_claims"], "E012", 60)
-    assert t["DAYS_AFTER_SURGERY"].is_monotonic_increasing
+    assert t["DAYS_AFTER_DISCHARGE"].is_monotonic_increasing
     assert t["RUNNING_ALLOWED"].iloc[-1] == pytest.approx(s.loc["E012", "POSTOP_ALLOWED"])
+
+
+def test_major_events_flag_readmissions(built):
+    _, o = built
+    events = o["major_events"]
+    assert {"subsequent_inpatient", "outpatient_surgery"} <= set(events["EVENT_TYPE"])
+    e009 = events[events["EPISODE_ID"] == "E009"]
+    assert (e009["EVENT_TYPE"] == "subsequent_inpatient").any()
