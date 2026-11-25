@@ -111,3 +111,27 @@ def test_major_events_flag_readmissions(built):
     assert {"subsequent_inpatient", "outpatient_surgery"} <= set(events["EVENT_TYPE"])
     e009 = events[events["EPISODE_ID"] == "E009"]
     assert (e009["EVENT_TYPE"] == "subsequent_inpatient").any()
+
+
+def test_major_events_relatedness_labels(built):
+    _, o = built
+    events = o["major_events"]
+    assert {"RELATED_TO_INDEX", "RELATEDNESS", "RELATEDNESS_REASON"} <= set(events.columns)
+    assert set(events["RELATEDNESS"]) <= {"Related", "Unrelated"}
+    assert events["RELATED_TO_INDEX"].dtype == bool or events["RELATED_TO_INDEX"].isin([True, False]).all()
+
+    # Exact index DIAG1 / spine family: E009 subsequent inpatient uses D3611 (index DIAG1).
+    e009_inp = events[(events["EPISODE_ID"] == "E009") & (events["EVENT_TYPE"] == "subsequent_inpatient")]
+    assert len(e009_inp) >= 1
+    assert bool(e009_inp.iloc[0]["RELATED_TO_INDEX"]) is True
+    assert e009_inp.iloc[0]["RELATEDNESS"] == "Related"
+
+    # Clearly outside spine/neuro family (breast / gyn / eye codes appear in pilot events).
+    unrelated = events[events["TOP_DIAG1_CD"].astype(str).str.startswith(("N63", "N64", "Z01", "H34"))]
+    assert len(unrelated) >= 1
+    assert (unrelated["RELATEDNESS"] == "Unrelated").all()
+    assert (unrelated["RELATEDNESS_REASON"] == "outside_spine_neuro_family").all()
+
+    summary = metrics.major_event_summary(events)
+    assert {"EVENT_TYPE", "RELATEDNESS", "EVENTS"} <= set(summary.columns)
+    assert summary["EVENTS"].sum() == len(events)

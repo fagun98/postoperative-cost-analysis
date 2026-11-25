@@ -36,7 +36,7 @@ This pilot still reads local processed CSVs bundled with the app. It does not ye
 | `src/preprocess.py` | Text-safe load, type parsing, quality checks, renames/derived columns |
 | `src/episodes.py` | Stay-based index episodes, post-discharge follow-up, major events, CSV I/O |
 | `src/metrics.py` | Descriptive aggregations, cohorts, thresholds, window sensitivity |
-| `src/app.py` | Four-tab dashboard, native Streamlit components only |
+| `src/app.py` | Two-tab dashboard (Overview, Drill Down), native Streamlit components only |
 | `scripts/validate_sample_stays.py` | Builds the E001–E010 stay / event summary table |
 | `data/processed/` | `claims_clean`, `index_episodes`, `index_stay_claims`, `followup_claims`, `major_events`, `episode_summary`, `data_quality_report` |
 | `app.yaml` | Databricks Apps start command and Streamlit proxy env |
@@ -47,7 +47,7 @@ This pilot still reads local processed CSVs bundled with the app. It does not ye
 - **Episode key:** INDEX-phase CPT 63280 lines grouped by member `id` + DOB (`db`) + `INDEX_SRVC_DT`. There are 16 eligible episodes.
 - **Index episode (hospital stay):** When POS `21` is present on the surgery date, the index is the contiguous inpatient stay (all claim lines from stay start through discharge). If there is no POS 21 on the surgery date, the index is all surgery-day claims. `INDEX_ALLOWED` is the stay total, not CPT-only.
 - **Postoperative:** claims with a service date after discharge, within the 30/60/90-day window, and a 2026 process date. Windows are counted from `STAY_END`.
-- **Major events:** after discharge, contiguous POS 21 runs (subsequent inpatient) and POS 22/24 days (outpatient surgery/facility) are flagged as investigation signals, not quality scores.
+- **Major events:** after discharge, contiguous POS 21 runs (subsequent inpatient) and POS 22/24 days (outpatient surgery/facility) are flagged as investigation signals, not quality scores. Each event is labeled **Related** or **Unrelated** to the index spine surgery using a deterministic spine/neuro DIAG1 prefix / CPT family list (plus exact index DIAG1 or index CPT match). This is a heuristic for investigation, not clinical adjudication.
 - **Cost:** `COV_ALLW_CONTR_AMT` (allowed amount). `TOTAL_ALLOWED = INDEX_ALLOWED + POSTOP_ALLOWED`. Cost statistics omit denied and zero-allowed amounts.
 - **Index provider:** `BILL_TIN` is the most common TIN on the CPT index lines. `INDEX_REND_NPI` is the rendering NPI on the highest-allowed CPT index line.
 - **Observation:** `OBS_DAYS` is the latest `PROC_DT` minus discharge (`STAY_END`).

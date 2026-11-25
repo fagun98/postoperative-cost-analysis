@@ -247,12 +247,15 @@ def stay_vs_postop_split(summary):
 
 
 def major_event_summary(events):
+    cols = ["EVENT_TYPE", "RELATEDNESS", "EVENTS", "EPISODES", "TOTAL_ALLOWED", "MEDIAN_ALLOWED"]
     if events is None or len(events) == 0:
-        return pd.DataFrame(columns=["EVENT_TYPE", "EVENTS", "EPISODES", "TOTAL_ALLOWED", "MEDIAN_ALLOWED"])
-    g = events.groupby("EVENT_TYPE")
+        return pd.DataFrame(columns=cols)
+    if "RELATEDNESS" not in events.columns:
+        events = events.assign(RELATEDNESS="Unrelated")
+    g = events.groupby(["EVENT_TYPE", "RELATEDNESS"], dropna=False)
     return pd.DataFrame({
         "EVENTS": g.size(),
         "EPISODES": g["EPISODE_ID"].nunique(),
         "TOTAL_ALLOWED": g["ALLOWED"].sum(),
         "MEDIAN_ALLOWED": g["ALLOWED"].median(),
-    }).reset_index().sort_values("TOTAL_ALLOWED", ascending=False, ignore_index=True)
+    }).reset_index().sort_values(["RELATEDNESS", "TOTAL_ALLOWED"], ascending=[True, False], ignore_index=True)

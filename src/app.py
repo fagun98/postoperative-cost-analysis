@@ -31,6 +31,30 @@ def show_table(df, **kwargs):
     st.dataframe(df, hide_index=True, column_config=money_config(df), **kwargs)
 
 
+def highlight_relatedness(row):
+    """Row colors via pandas Styler (no custom CSS). Related = green, Unrelated = gray; text black."""
+    relatedness = str(row.get("RELATEDNESS", "")).strip()
+    if relatedness == "Related":
+        style = "background-color: #d4edda; color: #000000"
+    elif relatedness == "Unrelated":
+        style = "background-color: #f0f0f0; color: #000000"
+    else:
+        return [""] * len(row)
+    return [style] * len(row)
+
+
+def show_relatedness_table(df, **kwargs):
+    """Drill-down event table with Related / Unrelated row highlighting."""
+    if df is None or df.empty:
+        show_table(df, **kwargs)
+        return
+    styled = df.reset_index(drop=True).style.apply(highlight_relatedness, axis=1)
+    money_cols = [c for c in df.columns if "ALLOWED" in c or c == "ALLOWED"]
+    if money_cols:
+        styled = styled.format({c: "${:,.2f}" for c in money_cols}, na_rep="")
+    st.dataframe(styled, hide_index=True, column_config=money_config(df), **kwargs)
+
+
 def fmt_money(x):
     return f"${x:,.0f}" if pd.notna(x) else "n/a"
 
@@ -53,16 +77,14 @@ st.title("Postoperative Cost Analysis")
 st.caption(
     "Exploratory cost and utilization view. "
     "The index episode is the full hospitalization tied to CPT 63280 (or the surgery day if not inpatient). "
-    "Follow-up starts after discharge and includes later claims whether or not they are clinically related to the surgery."
+    "Follow-up starts after discharge. Major events are flagged with a spine/neuro family heuristic "
+    "(Related / Unrelated); that is not clinical adjudication."
 )
 
 data = load()
 episodes = data["index_episodes"]
 followup = data["followup_claims"]
 sameday = data.get("sameday_claims", followup.iloc[0:0].copy())
-major_events = data.get("major_events")
-if major_events is None:
-    major_events = build_major_events(followup)
 
 # ---------------- Sidebar ----------------
 sb = st.sidebar
@@ -89,7 +111,6 @@ orgs = sb.multiselect(
 complete_only = sb.checkbox(f"Only episodes with full {window}-day observation", value=False)
 exclude_conflict = sb.checkbox("Exclude episodes with identity conflicts", value=False)
 exclude_denied_index = sb.checkbox("Exclude episodes with no eligible index stay dollars", value=False)
-threshold = sb.number_input("Postoperative allowed-cost flag ($)", min_value=0, value=25_000, step=1_000)
 
 summary = episode_summary(episodes, followup, sameday, window)
 mask = pd.Series(True, index=summary.index)
@@ -107,7 +128,7 @@ if exclude_denied_index:
     mask &= ~summary["INDEX_ALL_DENIED"]
 summary = summary[mask].reset_index(drop=True)
 fu = followup[followup["EPISODE_ID"].isin(summary["EPISODE_ID"])]
-ev = major_events[major_events["EPISODE_ID"].isin(summary["EPISODE_ID"])] if len(major_events) else major_events
+ev = build_major_events(fu, window, episodes=summary)
 
 sb.caption(f"{len(summary)} of {len(episodes)} index episodes selected.")
 
@@ -115,7 +136,7 @@ if summary.empty:
     st.info("No episodes match the current filters. Widen the filters in the sidebar.")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["Overview", "PostOperative Care Patterns", "Cohorts & Thresholds", "Drill Down"])
+tab1, tab2 = st.tabs(["Overview", "Drill Down"])
 
 # ---------------- Tab 1: Overview ----------------
 with tab1:
@@ -167,11 +188,20 @@ with tab1:
         })
         st.bar_chart(cost_dist, x="Postop allowed ($1,000)", y="Episodes")
     with right:
-        st.markdown("**Major follow-up events** (investigation signals, not quality scores)")
-        show_table(metrics.major_event_summary(ev))
-        c2 = st.columns(2)
-        c2[0].metric("Episodes with later inpatient", int((summary["SUBSEQUENT_INPATIENT_EVENTS"] > 0).sum()))
-        c2[1].metric("Episodes with later OP surgery", int((summary["OUTPATIENT_SURGERY_EVENTS"] > 0).sum()))
+        st.markdown("**Major follow-up events** (heuristic Related / Unrelated; not quality scores)")
+        st.caption(
+            "Related uses the spine/neuro family list, exact index DIAG1 match, or index CPT repeat. "
+            "Not clinical adjudication."
+        )
+        show_relatedness_table(metrics.major_event_summary(ev))
+        st.caption("Row colors: Related = light green · Unrelated = gray.")
+        related_n = int(ev["RELATED_TO_INDEX"].sum()) if len(ev) and "RELATED_TO_INDEX" in ev else 0
+        unrelated_n = int(len(ev) - related_n) if len(ev) else 0
+        c2 = st.columns(4)
+        c2[0].metric("Related events", related_n)
+        c2[1].metric("Unrelated events", unrelated_n)
+        c2[2].metric("Episodes with later inpatient", int((summary["SUBSEQUENT_INPATIENT_EVENTS"] > 0).sum()))
+        c2[3].metric("Episodes with later OP surgery", int((summary["OUTPATIENT_SURGERY_EVENTS"] > 0).sum()))
 
     left, right = st.columns(2)
     with left:
@@ -184,82 +214,8 @@ with tab1:
     st.markdown("**By index diagnosis**")
     show_table(metrics.by_index_diag(summary))
 
-# ---------------- Tab 2: Care Patterns ----------------
+# ---------------- Tab 2: Drill Down ----------------
 with tab2:
-    st.subheader(f"Follow-up services within {window} days after discharge")
-    if fu.empty:
-        st.info("No follow-up claim lines for the selected episodes in this window.")
-    else:
-        procs = metrics.proc_code_summary(fu, window)
-        left, right = st.columns(2)
-        with left:
-            st.markdown("**Top 10 procedure codes by claim lines**")
-            by_lines = procs.head(10).set_index("PROC_CD")[["CLAIM_LINES"]]
-            st.bar_chart(by_lines)
-        with right:
-            st.markdown("**Top 10 procedure codes by total allowed**")
-            by_allowed = procs.nlargest(10, "TOTAL_ALLOWED").set_index("PROC_CD")[["TOTAL_ALLOWED"]]
-            st.bar_chart(by_allowed)
-
-        st.markdown("**Timing: claim lines and allowed by days after discharge**")
-        show_table(metrics.bucket_summary(fu, window))
-
-        st.markdown("**All follow-up procedure codes** (claim lines, distinct episodes, allowed per line)")
-        show_table(procs)
-
-        with st.expander("Follow-up diagnosis × procedure × Billing Organization"):
-            st.caption("Follow-up diagnoses can differ from the index diagnosis.")
-            show_table(metrics.diag_proc_combos(fu, window))
-
-        st.markdown("**Index stay allowed vs. postoperative allowed** (association only)")
-        scatter = summary.assign(
-            **{
-                "Index stay allowed ($)": index_stat,
-                f"Postop allowed, {window}d ($)": postop_stat,
-            }
-        ).dropna(subset=["Index stay allowed ($)", f"Postop allowed, {window}d ($)"])
-        st.scatter_chart(scatter, x="Index stay allowed ($)", y=f"Postop allowed, {window}d ($)")
-
-# ---------------- Tab 3: Cohorts & Thresholds ----------------
-with tab3:
-    st.subheader("Postoperative cost-burden cohorts")
-    st.caption("Cohorts come from the selected episodes' own after-discharge distribution. "
-               "They are investigation flags, not clinically validated cutoffs.")
-    low_pct, high_pct = st.slider("Lower / Elevated percentile cutoffs", 5, 95, (25, 75), step=5)
-    cohorted, lo, hi = metrics.assign_cohorts(summary, low_pct, high_pct)
-    st.caption(f"Lower: ≤ {fmt_money(lo)} · Typical: {fmt_money(lo)}–{fmt_money(hi)} · Elevated: > {fmt_money(hi)}")
-
-    cs = metrics.cohort_summary(cohorted)
-    c = st.columns(3)
-    for col, row in zip(c, cs.itertuples()):
-        col.metric(f"{row.COHORT} burden", f"{row.EPISODES} episodes",
-                   help=f"Median postop allowed {fmt_money(row.MEDIAN_POSTOP_ALLOWED)}")
-    show_table(cs)
-
-    st.markdown("---")
-    st.markdown(f"**Dollar threshold: postop allowed > {fmt_money(threshold)}**")
-    flag = metrics.flag_threshold(summary, threshold)
-    c = st.columns(2)
-    c[0].metric("Episodes above threshold", f"{flag['flagged']} of {flag['total']}")
-    c[1].metric("Share above threshold", f"{flag['share']:.0%}")
-    above = pd.DataFrame({
-        "Episodes": [flag["total"] - flag["flagged"], flag["flagged"]],
-    }, index=pd.Index(["At or below", "Above"], name="Group"))
-    st.bar_chart(above)
-
-    st.markdown("---")
-    st.markdown("**Billing Organizations by cohort**")
-    st.caption("Small sample and most organizations only have one episode.")
-    show_table(metrics.org_cohort_counts(cohorted))
-
-    with st.expander("Sensitivity: cohort changes across 30 / 60 / 90 days"):
-        sel_eps = episodes[episodes["EPISODE_ID"].isin(summary["EPISODE_ID"])]
-        sens = metrics.window_sensitivity(sel_eps, followup, sameday, low_pct, high_pct)
-        st.caption(f"{int(sens['COHORT_CHANGED'].sum())} of {len(sens)} episodes change cohort between windows.")
-        show_table(sens)
-
-# ---------------- Tab 4: Drill Down ----------------
-with tab4:
     st.subheader("Episode timeline")
     drill_index = metrics.cost_stat_series(summary, "INDEX_ALLOWED")
     drill_postop = metrics.cost_stat_series(summary, "POSTOP_ALLOWED")
@@ -292,12 +248,26 @@ with tab4:
 
     ep_events = ev[ev["EPISODE_ID"] == ep_id] if len(ev) else ev
     st.markdown("**Major follow-up events after discharge**")
-    st.caption("Subsequent inpatient stays and outpatient surgery/facility days are investigation signals, "
-               "not definitive evidence of surgical quality.")
+    st.caption(
+        "Related / Unrelated is a spine/neuro family heuristic for investigation, "
+        "not definitive evidence of surgical quality or clinical relatedness. "
+        "Row colors: Related = light green · Unrelated = gray."
+    )
+    relatedness_filter = st.selectbox("Event relatedness", ["All", "Related", "Unrelated"])
     if ep_events is None or ep_events.empty:
         st.info("No subsequent inpatient or outpatient-surgery events in this window.")
     else:
-        show_table(ep_events)
+        shown = ep_events
+        if relatedness_filter != "All" and "RELATEDNESS" in shown.columns:
+            shown = shown[shown["RELATEDNESS"] == relatedness_filter]
+        if shown.empty:
+            st.info(f"No {relatedness_filter.lower()} major events for this episode in this window.")
+        else:
+            show_cols = [
+                "EVENT_TYPE", "START_DT", "END_DT", "RELATEDNESS", "RELATEDNESS_REASON",
+                "LINES", "ALLOWED", "TOP_PROC_CD", "TOP_DIAG1_CD", "TOP_DIAG1_DESC",
+            ]
+            show_relatedness_table(shown[[c for c in show_cols if c in shown.columns]])
 
     tl = metrics.timeline(followup, ep_id, window)
     if tl.empty:
@@ -330,8 +300,11 @@ with tab4:
         org_eps["INDEX_ALLOWED"] = metrics.cost_stat_series(org_eps, "INDEX_ALLOWED")
         org_eps["POSTOP_ALLOWED"] = metrics.cost_stat_series(org_eps, "POSTOP_ALLOWED")
         org_eps["TOTAL_ALLOWED"] = metrics.cost_stat_series(org_eps, "TOTAL_ALLOWED")
-        cols = ["EPISODE_ID", "INDEX_SRVC_DT", "STAY_END", "INDEX_REND_NPI", "INDEX_ALLOWED", "POSTOP_ALLOWED",
-                "TOTAL_ALLOWED", "POSTOP_LINES", "SUBSEQUENT_INPATIENT_EVENTS", "OUTPATIENT_SURGERY_EVENTS"]
+        cols = [
+            "EPISODE_ID", "INDEX_SRVC_DT", "STAY_END", "INDEX_REND_NPI", "INDEX_ALLOWED", "POSTOP_ALLOWED",
+            "TOTAL_ALLOWED", "POSTOP_LINES", "SUBSEQUENT_INPATIENT_EVENTS", "OUTPATIENT_SURGERY_EVENTS",
+            "RELATED_MAJOR_EVENTS", "UNRELATED_MAJOR_EVENTS",
+        ]
         show_table(org_eps[[c for c in cols if c in org_eps.columns]])
         if len(org_eps) < SMALL_SAMPLE:
             st.caption(f"Fewer than {SMALL_SAMPLE} episodes.")
@@ -353,7 +326,8 @@ with st.expander("Notes"):
         f"- **Postoperative:** claims with a service date after discharge, within the {window}-day window, and a "
         "2026 process date.\n"
         "- **Major events:** later POS 21 runs (subsequent inpatient) and POS 22/24 days (outpatient surgery/"
-        "facility) are flagged for review. They are not quality scores.\n"
+        "facility) are flagged for review. **Related / Unrelated** uses a deterministic spine/neuro DIAG1 prefix "
+        "and CPT family list plus exact index DIAG1 / index CPT match. This is not clinical adjudication.\n"
         "- **Cost statistics** omit denied claims and claims with zero allowed amount. Those claims are still "
         "counted separately."
     )

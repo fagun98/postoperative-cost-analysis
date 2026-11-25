@@ -150,13 +150,60 @@ def _contiguous_runs(dates):
     yield start, prev
 
 
-def build_major_events(followup, window=config.DEFAULT_WINDOW):
+def _relatedness_for_row(proc_cd, diag_cd, index_cpt, index_diag):
+    """Return (related_bool, reason). Deterministic spine/neuro family heuristic."""
+    proc = "" if pd.isna(proc_cd) else str(proc_cd).strip()
+    diag = "" if pd.isna(diag_cd) else str(diag_cd).strip().upper()
+    idx_cpt = "" if pd.isna(index_cpt) else str(index_cpt).strip()
+    idx_diag = "" if pd.isna(index_diag) else str(index_diag).strip().upper()
+
+    if proc and idx_cpt and proc == idx_cpt:
+        return True, "index_cpt"
+    if proc and proc in config.RELATED_PROC_CODES:
+        return True, f"related_proc:{proc}"
+    if diag and idx_diag and diag == idx_diag:
+        return True, "exact_index_diag"
+    if diag and diag in config.RELATED_DIAG_CODES:
+        return True, f"related_diag:{diag}"
+    if diag:
+        for prefix in sorted(config.RELATED_DIAG_PREFIXES, key=len, reverse=True):
+            if diag.startswith(prefix):
+                return True, f"diag_prefix:{prefix}"
+    return False, "outside_spine_neuro_family"
+
+
+def label_event_relatedness(events, episodes):
+    """Attach RELATED_TO_INDEX / RELATEDNESS / RELATEDNESS_REASON using index DIAG1+CPT."""
+    cols = ["RELATED_TO_INDEX", "RELATEDNESS", "RELATEDNESS_REASON"]
+    if events is None or len(events) == 0:
+        empty = events.copy() if events is not None else pd.DataFrame()
+        for c in cols:
+            empty[c] = pd.Series(dtype="object" if c != "RELATED_TO_INDEX" else "boolean")
+        return empty
+
+    ep = episodes[["EPISODE_ID", "INDEX_CPT", "INDEX_DIAG1_CD"]].drop_duplicates("EPISODE_ID")
+    out = events.merge(ep, on="EPISODE_ID", how="left")
+    flags, reasons = [], []
+    for row in out.itertuples(index=False):
+        related, reason = _relatedness_for_row(
+            row.TOP_PROC_CD, row.TOP_DIAG1_CD, row.INDEX_CPT, row.INDEX_DIAG1_CD)
+        flags.append(related)
+        reasons.append(reason)
+    out["RELATED_TO_INDEX"] = flags
+    out["RELATEDNESS"] = ["Related" if r else "Unrelated" for r in flags]
+    out["RELATEDNESS_REASON"] = reasons
+    return out.drop(columns=["INDEX_CPT", "INDEX_DIAG1_CD"]).reset_index(drop=True)
+
+
+def build_major_events(followup, window=config.DEFAULT_WINDOW, episodes=None):
     """Subsequent inpatient stays and outpatient surgery/facility events after discharge."""
+    empty_cols = [
+        "EPISODE_ID", "EVENT_TYPE", "START_DT", "END_DT", "LINES", "ALLOWED",
+        "TOP_PROC_CD", "TOP_DIAG1_CD", "TOP_DIAG1_DESC",
+        "RELATED_TO_INDEX", "RELATEDNESS", "RELATEDNESS_REASON",
+    ]
     if followup.empty:
-        return pd.DataFrame(columns=[
-            "EPISODE_ID", "EVENT_TYPE", "START_DT", "END_DT", "LINES", "ALLOWED",
-            "TOP_PROC_CD", "TOP_DIAG1_CD", "TOP_DIAG1_DESC",
-        ])
+        return pd.DataFrame(columns=empty_cols)
 
     fu = followup[followup["DAYS_AFTER_DISCHARGE"] <= window].copy()
     fu["SRVC_STRT_DT"] = _norm_dates(fu["SRVC_STRT_DT"])
@@ -197,8 +244,15 @@ def build_major_events(followup, window=config.DEFAULT_WINDOW):
 
     out = pd.DataFrame(rows)
     if out.empty:
-        return out
-    return out.sort_values(["EPISODE_ID", "START_DT", "EVENT_TYPE"]).reset_index(drop=True)
+        return pd.DataFrame(columns=empty_cols)
+    out = out.sort_values(["EPISODE_ID", "START_DT", "EVENT_TYPE"]).reset_index(drop=True)
+    if episodes is not None and len(episodes):
+        out = label_event_relatedness(out, episodes)
+    else:
+        out["RELATED_TO_INDEX"] = False
+        out["RELATEDNESS"] = "Unrelated"
+        out["RELATEDNESS_REASON"] = "missing_index_context"
+    return out
 
 
 def episode_summary(episodes, followup, sameday, window=config.DEFAULT_WINDOW):
@@ -230,17 +284,20 @@ def episode_summary(episodes, followup, sameday, window=config.DEFAULT_WINDOW):
     else:
         same = pd.DataFrame(columns=["SAMEDAY_ALLOWED", "SAMEDAY_LINES"])
 
-    events = build_major_events(followup, window)
+    events = build_major_events(followup, window, episodes=episodes)
     if len(events):
         ev = events.groupby("EPISODE_ID").agg(
             MAJOR_EVENTS=("EVENT_TYPE", "size"),
             SUBSEQUENT_INPATIENT_EVENTS=("EVENT_TYPE", lambda s: int((s == "subsequent_inpatient").sum())),
             OUTPATIENT_SURGERY_EVENTS=("EVENT_TYPE", lambda s: int((s == "outpatient_surgery").sum())),
+            RELATED_MAJOR_EVENTS=("RELATED_TO_INDEX", lambda s: int(s.sum())),
+            UNRELATED_MAJOR_EVENTS=("RELATED_TO_INDEX", lambda s: int((~s.astype(bool)).sum())),
             MAJOR_EVENT_ALLOWED=("ALLOWED", "sum"),
         )
     else:
         ev = pd.DataFrame(columns=[
-            "MAJOR_EVENTS", "SUBSEQUENT_INPATIENT_EVENTS", "OUTPATIENT_SURGERY_EVENTS", "MAJOR_EVENT_ALLOWED",
+            "MAJOR_EVENTS", "SUBSEQUENT_INPATIENT_EVENTS", "OUTPATIENT_SURGERY_EVENTS",
+            "RELATED_MAJOR_EVENTS", "UNRELATED_MAJOR_EVENTS", "MAJOR_EVENT_ALLOWED",
         ])
 
     out = episodes.merge(agg, left_on="EPISODE_ID", right_index=True, how="left") \
@@ -248,7 +305,8 @@ def episode_summary(episodes, followup, sameday, window=config.DEFAULT_WINDOW):
                   .merge(ev, left_on="EPISODE_ID", right_index=True, how="left")
     count_cols = ["POSTOP_LINES", "POSTOP_PAID_LINES", "POSTOP_DENIED_OR_ZERO_LINES",
                   "POSTOP_DISTINCT_PROC", "POSTOP_SERVICE_DAYS", "SAMEDAY_LINES",
-                  "MAJOR_EVENTS", "SUBSEQUENT_INPATIENT_EVENTS", "OUTPATIENT_SURGERY_EVENTS"]
+                  "MAJOR_EVENTS", "SUBSEQUENT_INPATIENT_EVENTS", "OUTPATIENT_SURGERY_EVENTS",
+                  "RELATED_MAJOR_EVENTS", "UNRELATED_MAJOR_EVENTS"]
     for c in count_cols:
         if c not in out:
             out[c] = 0
@@ -265,7 +323,7 @@ def build_all(claims, report):
     episodes = build_index_episodes(claims)
     followup, sameday, excluded, index_stay = attach_followup(claims, episodes)
     summary = episode_summary(episodes, followup, sameday)
-    major_events = build_major_events(followup)
+    major_events = build_major_events(followup, episodes=episodes)
 
     extra = [report]
     if len(excluded):
@@ -324,14 +382,14 @@ def read_outputs(out_dir=config.PROCESSED_DIR):
     text_cols = {c: "string" for c in ["id", "PERSON_KEY", "BILL_TIN", "BILL_NPI", "BILL_MPIN", "REND_NPI",
                                        "INDEX_REND_NPI", "INDEX_REND_NPIS", "PROC_CD", "PLSRV_CD", "DIAG1_CD",
                                        "INDEX_DIAG1_CD", "INDEX_CPT", "EPISODE_ID", "EVENT_TYPE",
-                                       "TOP_PROC_CD", "TOP_DIAG1_CD"]}
+                                       "TOP_PROC_CD", "TOP_DIAG1_CD", "RELATEDNESS", "RELATEDNESS_REASON"]}
     dates = ["INDEX_SRVC_DT", "SRVC_STRT_DT", "SRVC_END_DT", "PROC_DT", "db",
              "STAY_START", "STAY_END", "START_DT", "END_DT"]
     result = {}
     names = ["index_episodes", "index_stay_claims", "followup_claims", "sameday_claims",
              "major_events", "episode_summary", "data_quality_report"]
     bool_cols = ["INPATIENT", "INDEX_ALL_DENIED", "INDEX_MULTI_TIN", "IDENTITY_CONFLICT",
-                 "COMPLETE_30", "COMPLETE_60", "COMPLETE_90", "COMPLETE_FOLLOWUP"]
+                 "RELATED_TO_INDEX", "COMPLETE_30", "COMPLETE_60", "COMPLETE_90", "COMPLETE_FOLLOWUP"]
     for name in names:
         path = out_dir / f"{name}.csv"
         if not path.exists():
