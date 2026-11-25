@@ -32,12 +32,12 @@ def show_table(df, **kwargs):
 
 
 def highlight_relatedness(row):
-    """Row colors via pandas Styler (no custom CSS). Related = green, Unrelated = gray; text black."""
+    """Row colors via pandas Styler (no custom CSS). Related = green, Unrelated = light red; text black."""
     relatedness = str(row.get("RELATEDNESS", "")).strip()
     if relatedness == "Related":
         style = "background-color: #d4edda; color: #000000"
     elif relatedness == "Unrelated":
-        style = "background-color: #f0f0f0; color: #000000"
+        style = "background-color: #f8d7da; color: #000000"
     else:
         return [""] * len(row)
     return [style] * len(row)
@@ -194,7 +194,7 @@ with tab1:
             "Not clinical adjudication."
         )
         show_relatedness_table(metrics.major_event_summary(ev))
-        st.caption("Row colors: Related = light green · Unrelated = gray.")
+        st.caption("Row colors: Related = light green · Unrelated = light red.")
         related_n = int(ev["RELATED_TO_INDEX"].sum()) if len(ev) and "RELATED_TO_INDEX" in ev else 0
         unrelated_n = int(len(ev) - related_n) if len(ev) else 0
         c2 = st.columns(4)
@@ -251,7 +251,7 @@ with tab2:
     st.caption(
         "Related / Unrelated is a spine/neuro family heuristic for investigation, "
         "not definitive evidence of surgical quality or clinical relatedness. "
-        "Row colors: Related = light green · Unrelated = gray."
+        "Row colors: Related = light green · Unrelated = light red."
     )
     relatedness_filter = st.selectbox("Event relatedness", ["All", "Related", "Unrelated"])
     if ep_events is None or ep_events.empty:
